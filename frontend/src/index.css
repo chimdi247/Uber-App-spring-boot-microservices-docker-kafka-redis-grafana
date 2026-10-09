@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 22% 95%;
+    --foreground: 220 40% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 40% 11%;
+    --primary: 220 45% 13%;
+    --primary-foreground: 210 30% 97%;
+    --secondary: 213 22% 90%;
+    --secondary-foreground: 220 40% 15%;
+    --muted: 213 20% 91%;
+    --muted-foreground: 217 14% 38%;
+    --accent: 41 100% 94%;
+    --accent-foreground: 30 80% 18%;
+    --destructive: 352 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 18% 85%;
+    --input: 214 18% 82%;
+    --ring: 41 100% 44%;
+    --radius: 0.65rem;
+    --ink: 220 45% 13%;
+    --meter: 41 100% 50%;
+    --route: 183 82% 29%;
+  }
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  h1, h2, h3, .font-display { font-family: "Space Grotesk Variable", "Inter Variable", ui-sans-serif, sans-serif; letter-spacing: -0.01em; }
+}
+
+/* Leaflet markers are divIcons so we don't depend on bundled marker images */
+.leaflet-container { font-family: inherit; background: #dfe6ec; }
+.pin { position: relative; width: 26px; height: 26px; }
+.pin > span {
+  position: absolute; inset: 0; border-radius: 9999px 9999px 9999px 0; transform: rotate(-45deg);
+  border: 3px solid #fff; box-shadow: 0 2px 6px rgb(0 0 0 / .35);
+}
+.pin.pickup > span { background: hsl(183 82% 29%); }
+.pin.drop > span { background: hsl(220 45% 13%); }
+.pin.drop > i, .pin.pickup > i {
+  position: absolute; left: 50%; top: 42%; width: 8px; height: 8px; border-radius: 9999px; background: #fff;
+  transform: translate(-50%, -50%); z-index: 1;
+}
+.car {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9999px;
+  background: hsl(41 100% 50%); border: 2px solid hsl(220 45% 13%); box-shadow: 0 2px 6px rgb(0 0 0 / .35);
+  font-size: 14px; line-height: 1;
+}
+.car.assigned { outline: 3px solid hsl(183 82% 29%); outline-offset: 2px; }
+.car.selected { outline: 3px solid hsl(352 62% 50%); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

@@ -1,0 +1,41 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:6033/uberapp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${SPRING_DATASOURCE_USERNAME:uber_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:uber_app_pw}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      pool-name: auth-hikari
+      maximum-pool-size: 10
+      minimum-idle: 2
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+
+# Shared with api-gateway. MUST be >= 32 characters.
+security:
+  jwt:
+    secret: ${JWT_SECRET:change-me-please-change-me-please-0123456789}
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:480}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{trace_id:-},%X{span_id:-}]"

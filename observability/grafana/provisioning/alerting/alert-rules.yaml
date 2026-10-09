@@ -1,0 +1,364 @@
+apiVersion: 1
+groups:
+- orgId: 1
+  name: resource-usage
+  folder: RideShare Alerts
+  interval: 1m
+  rules:
+  - uid: alert-container-cpu-50
+    title: Container CPU above 50%
+    condition: C
+    for: 2m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: 100 * sum by (name) (rate(container_cpu_usage_seconds_total{name=~"api-gateway|auth-service|location-service|ride-service|matching-service|frontend"}[2m])) / (sum by (name) (container_spec_cpu_quota{name=~"api-gateway|auth-service|location-service|ride-service|matching-service|frontend"})
+          / sum by (name) (container_spec_cpu_period{name=~"api-gateway|auth-service|location-service|ride-service|matching-service|frontend"}))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 50
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: CPU > 50% on container {{ $$labels.name }}
+      description: Container {{ $$labels.name }} uses {{ printf "%.1f" $$values.B.Value }}% of its CPU limit (threshold 50%).
+    labels:
+      severity: warning
+  - uid: alert-container-memory-50
+    title: Container memory above 50%
+    condition: C
+    for: 2m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: 100 * sum by (name) (container_memory_working_set_bytes{name=~"api-gateway|auth-service|location-service|ride-service|matching-service|frontend"}) / (sum by (name) (container_spec_memory_limit_bytes{name=~"api-gateway|auth-service|location-service|ride-service|matching-service|frontend"})
+          > 0)
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 50
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: Memory > 50% on container {{ $$labels.name }}
+      description: Container {{ $$labels.name }} uses {{ printf "%.1f" $$values.B.Value }}% of its memory limit (threshold 50%).
+    labels:
+      severity: warning
+  - uid: alert-node-cpu-50
+    title: Node CPU above 50%
+    condition: C
+    for: 2m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: 100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 50
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: Node CPU > 50% on {{ $$labels.instance }}
+      description: Node {{ $$labels.instance }} CPU is at {{ printf "%.1f" $$values.B.Value }}% (threshold 50%).
+    labels:
+      severity: warning
+  - uid: alert-node-memory-50
+    title: Node memory above 50%
+    condition: C
+    for: 2m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 50
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: Node memory > 50% on {{ $$labels.instance }}
+      description: Node {{ $$labels.instance }} memory is at {{ printf "%.1f" $$values.B.Value }}% (threshold 50%).
+    labels:
+      severity: warning
+- orgId: 1
+  name: service-slo
+  folder: RideShare Alerts
+  interval: 1m
+  rules:
+  - uid: alert-service-down
+    title: Service health probe failing
+    condition: C
+    for: 1m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 300
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: probe_success{job="blackbox-http"}
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: '{{ $$labels.service }} is DOWN'
+      description: Health check of {{ $$labels.service }} has failed for 1 minute.
+    labels:
+      severity: critical
+  - uid: alert-5xx-ratio
+    title: HTTP 5xx ratio above 5%
+    condition: C
+    for: 3m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: sum by (service_name) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5..", http_route!~"/actuator.*"}[5m])) / sum by (service_name) (rate(http_server_request_duration_seconds_count{http_route!~"/actuator.*"}[5m]))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.05
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: High 5xx ratio on {{ $$labels.service_name }}
+      description: '{{ $$labels.service_name }} returns {{ printf "%.1f" (mul $$values.B.Value 100.0) }}% server errors.'
+    labels:
+      severity: critical
+  - uid: alert-p95-latency
+    title: p95 latency above 1s
+    condition: C
+    for: 5m
+    noDataState: OK
+    execErrState: Error
+    isPaused: false
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: prometheus
+      model:
+        expr: histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{http_route!~"/actuator.*"}[5m])))
+        instant: true
+        intervalMs: 15000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        refId: B
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 1
+        refId: C
+        datasource:
+          type: __expr__
+          uid: __expr__
+    annotations:
+      summary: Slow responses on {{ $$labels.service_name }}
+      description: p95 latency of {{ $$labels.service_name }} is {{ printf "%.2f" $$values.B.Value }}s.
+    labels:
+      severity: warning

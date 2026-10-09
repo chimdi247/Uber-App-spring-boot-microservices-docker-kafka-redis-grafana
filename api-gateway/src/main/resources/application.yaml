@@ -1,0 +1,51 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      httpclient:
+        connect-timeout: 3000
+        response-timeout: 30s
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            maxAge: 3600
+      routes:
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/api/v1/auth/**
+        - id: ride-service
+          uri: ${RIDE_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/v1/rides/**
+        - id: location-service
+          uri: ${LOCATION_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/v1/locations/**
+
+# Must match auth-service. MUST be >= 32 characters.
+security:
+  jwt:
+    secret: ${JWT_SECRET:change-me-please-change-me-please-0123456789}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{trace_id:-},%X{span_id:-}]"

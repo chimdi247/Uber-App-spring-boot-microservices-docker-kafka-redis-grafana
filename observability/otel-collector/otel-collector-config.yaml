@@ -1,0 +1,85 @@
+# OpenTelemetry Collector - single entry point for all telemetry.
+#   apps (OTel Java agent) --OTLP--> collector --> Tempo (traces) | Prometheus (metrics) | Loki (logs)
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  batch:
+    timeout: 2s
+
+  # Health checks (docker/blackbox every few seconds) would drown real traces
+  filter/drop-health-spans:
+    error_mode: ignore
+    traces:
+      span:
+        - 'IsMatch(attributes["url.path"], "^/actuator.*")'
+
+  # Keep metric labels low-cardinality: only these resource attributes become Prometheus labels
+  transform/metrics-resource:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.namespace", "service.instance.id", "deployment.environment"])
+
+  # Append trace/span ids to the log line so Grafana can link Loki -> Tempo with a plain regex,
+  # and so a log line is self-describing when copied out of Grafana.
+  transform/logs-trace-ids:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(body, Concat([body.string, " trace_id=", trace_id.string, " span_id=", span_id.string], "")) where trace_id.string != "00000000000000000000000000000000" and IsString(body)
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Scraped by Prometheus (job "otel-collector")
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+    enable_open_metrics: true      # exemplars: histogram bucket -> trace
+    metric_expiration: 5m
+
+  # Loki >= 3 ingests OTLP natively (resource attrs -> labels, log attrs -> structured metadata)
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/drop-health-spans, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/metrics-resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/logs-trace-ids, batch]
+      exporters: [otlphttp/loki]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888

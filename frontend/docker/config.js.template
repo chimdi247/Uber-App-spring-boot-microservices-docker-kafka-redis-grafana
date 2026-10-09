@@ -1,0 +1,15 @@
+window.__APP_CONFIG__ = {
+  mapCenter: [${MAP_CENTER_LAT}, ${MAP_CENTER_LNG}],
+  mapZoom: ${MAP_ZOOM},
+  tileUrl: "${MAP_TILE_URL}",
+  tileAttribution: "${MAP_TILE_ATTRIBUTION}",
+  geocoderUrl: "${GEOCODER_URL}",
+  osrmUrl: "/osrm",
+  tools: {
+    grafana: "${GRAFANA_URL}",
+    kafkaUi: "${KAFKA_UI_URL}",
+    redisUi: "${REDIS_UI_URL}",
+    mailpit: "${MAILPIT_URL}",
+    prometheus: "${PROMETHEUS_URL}",
+  },
+};

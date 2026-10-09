@@ -1,0 +1,69 @@
+# ─── Ride Service ───────────────────────────────────────────────
+# Every value can be overridden with an environment variable (docker-compose does this).
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: ride-service
+
+  # MySQL through ProxySQL (connection pooling + read/write split)
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:6033/uberapp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${SPRING_DATASOURCE_USERNAME:uber_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:uber_app_pw}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      pool-name: ride-hikari
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  # Tables are created by docker/mysql/init/01-schema.sql, Hibernate must not touch the schema
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    properties:
+      hibernate:
+        # Needed so that @QueryHints(org.hibernate.comment = "route:reader") reaches ProxySQL
+        use_sql_comments: true
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ride-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring:
+          json:
+            trusted:
+              packages: "*"
+            use:
+              type:
+                headers: false
+            value:
+              default:
+                type: com.rideshare.rideservice.event.RideMatchedEvent
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{trace_id:-},%X{span_id:-}]"

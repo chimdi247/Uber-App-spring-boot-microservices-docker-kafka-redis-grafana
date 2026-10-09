@@ -1,0 +1,611 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  RideShare (Uber-style) platform - one compose file for everything
+#
+#    docker compose up -d --build             # app + infra + observability
+#    docker compose --profile osrm up -d      # + self-hosted OSRM routing engine
+#    docker compose --profile tests run --rm k6 run /scripts/smoke.js
+#
+#  Web UI       http://localhost:8088   (admin@example.com / password123)
+#  Grafana      http://localhost:3000   (admin / admin)
+#  Kafka UI     http://localhost:8085
+#  Redis UI     http://localhost:8087
+#  Mailpit      http://localhost:8025   (alert e-mails)
+#  Prometheus   http://localhost:9090
+# ═══════════════════════════════════════════════════════════════════════════
+name: rideshare
+
+x-java-service: &java-service
+  restart: unless-stopped
+  networks: [rideshare-network]
+  deploy:
+    resources:
+      limits:
+        cpus: "1.0"
+        memory: 1g
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+  OTEL_PROPAGATORS: tracecontext,baggage
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local,service.namespace=rideshare
+  TZ: UTC
+
+x-java-health: &java-health
+  interval: 10s
+  timeout: 5s
+  retries: 15
+  start_period: 60s
+
+services:
+
+  # ═════════════════════════ FRONTEND ═════════════════════════
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8088}:80"
+    environment:
+      OSRM_UPSTREAM: ${OSRM_UPSTREAM:-https://router.project-osrm.org}
+      OSRM_HOST_HEADER: ${OSRM_HOST_HEADER:-router.project-osrm.org}
+      MAP_CENTER_LAT: ${MAP_CENTER_LAT:-12.9716}
+      MAP_CENTER_LNG: ${MAP_CENTER_LNG:-77.5946}
+      MAP_ZOOM: ${MAP_ZOOM:-13}
+      MAP_TILE_URL: ${MAP_TILE_URL:-https://tile.openstreetmap.org/{z}/{x}/{y}.png}
+      MAP_TILE_ATTRIBUTION: ${MAP_TILE_ATTRIBUTION:-&copy; OpenStreetMap contributors}
+      GEOCODER_URL: ${GEOCODER_URL:-https://nominatim.openstreetmap.org}
+      GRAFANA_URL: http://34.171.152.81:3000
+      KAFKA_UI_URL: http://34.171.152.81:8085
+      REDIS_UI_URL: http://34.171.152.81:8087
+      MAILPIT_URL: http://34.171.152.81:8025
+      PROMETHEUS_URL: http://34.171.152.81:9090
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+    networks: [rideshare-network]
+
+  # ═════════════════════════ MICROSERVICES ═════════════════════════
+  api-gateway:
+    <<: *java-service
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: api-gateway
+      JWT_SECRET: ${JWT_SECRET:-dev-only-rideshare-jwt-secret-change-me-0123456789}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      RIDE_SERVICE_URL: http://ride-service:8083
+      LOCATION_SERVICE_URL: http://location-service:8082
+    depends_on:
+      auth-service: { condition: service_healthy }
+      ride-service: { condition: service_healthy }
+      location-service: { condition: service_healthy }
+    healthcheck:
+      <<: *java-health
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health || exit 1"]
+
+  auth-service:
+    <<: *java-service
+    build: ./auth-service
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: auth-service
+      JWT_SECRET: ${JWT_SECRET:-dev-only-rideshare-jwt-secret-change-me-0123456789}
+      SPRING_DATASOURCE_URL: jdbc:mysql://proxysql:6033/uberapp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: uber_app
+      SPRING_DATASOURCE_PASSWORD: uber_app_pw
+    depends_on:
+      proxysql: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    healthcheck:
+      <<: *java-health
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/actuator/health || exit 1"]
+
+  location-service:
+    <<: *java-service
+    build: ./location-service
+    container_name: location-service
+    ports:
+      - "8082:8082"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: location-service
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+    depends_on:
+      redis: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    healthcheck:
+      <<: *java-health
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8082/actuator/health || exit 1"]
+
+  ride-service:
+    <<: *java-service
+    build: ./ride-service
+    container_name: ride-service
+    ports:
+      - "8083:8083"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ride-service
+      SPRING_DATASOURCE_URL: jdbc:mysql://proxysql:6033/uberapp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: uber_app
+      SPRING_DATASOURCE_PASSWORD: uber_app_pw
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      proxysql: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      otel-collector: { condition: service_started }
+    healthcheck:
+      <<: *java-health
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/actuator/health || exit 1"]
+
+  matching-service:
+    <<: *java-service
+    build: ./matching-service
+    container_name: matching-service
+    ports:
+      - "8084:8084"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: matching-service
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      LOCATION_SERVICE_URL: http://location-service:8082
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+      location-service: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    healthcheck:
+      <<: *java-health
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8084/actuator/health || exit 1"]
+
+  # ═════════════════════════ DATA STORES ═════════════════════════
+  mysql-primary:
+    image: mysql:8.0
+    container_name: mysql-primary
+    restart: unless-stopped
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --log-replica-updates=ON
+      - --binlog-expire-logs-seconds=604800
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --max-connections=300
+      - --skip-name-resolve
+      - --slow-query-log=ON
+      - --long-query-time=0.5
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_pw}
+      TZ: UTC
+    ports:
+      - "3307:3306"   # direct access (bypasses ProxySQL) - handy for debugging
+    volumes:
+      - mysql-primary-data:/var/lib/mysql
+      # users -> tables -> admin seed, executed in file-name order on first start
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [rideshare-network]
+
+  mysql-replica:
+    image: mysql:8.0
+    container_name: mysql-replica
+    restart: unless-stopped
+    command:
+      - --server-id=2
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --log-replica-updates=ON
+      - --relay-log=relay-bin
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --max-connections=300
+      - --skip-name-resolve
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_pw}
+      TZ: UTC
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql-replica-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [rideshare-network]
+
+  # Points the replica at the primary, then makes it read-only (runs once and exits)
+  mysql-replication-setup:
+    image: mysql:8.0
+    container_name: mysql-replication-setup
+    restart: "no"
+    entrypoint: ["bash", "/scripts/replication-setup.sh"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_pw}
+    volumes:
+      - ./docker/mysql/scripts:/scripts:ro
+    depends_on:
+      mysql-primary: { condition: service_healthy }
+      mysql-replica: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  # Connection pooling, multiplexing, read/write split and load balancing for MySQL
+  proxysql:
+    image: proxysql/proxysql:2.5.5
+    container_name: proxysql
+    restart: unless-stopped
+    ports:
+      - "6033:6033"   # MySQL protocol (apps connect here)
+      - "6032:6032"   # admin interface (admin / admin)
+    volumes:
+      - ./docker/proxysql/proxysql.cnf:/etc/proxysql.cnf:ro
+    depends_on:
+      mysql-replication-setup: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6033'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [rideshare-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-geo
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [rideshare-network]
+
+  redis-ui:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-ui
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8087:8081"
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  # ═════════════════════════ KAFKA (KRaft, no ZooKeeper) ═════════════════════════
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"   # for clients running on the host
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks: [rideshare-network]
+
+  # Creates the topics with 3 partitions before any service starts (runs once and exits)
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    restart: "no"
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ride.requested --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ride.matched   --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --list
+    networks: [rideshare-network]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    environment:
+      KAFKA_CLUSTERS_0_NAME: rideshare
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    ports:
+      - "8085:8080"
+    depends_on:
+      kafka: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  # ═════════════════════════ ROUTING ENGINE (optional profile) ═════════════════════════
+  osrm-prep:
+    profiles: ["osrm"]
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm-prep
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/scripts/prepare.sh"]
+    environment:
+      OSRM_PBF_URL: ${OSRM_PBF_URL:-https://download.geofabrik.de/asia/india/southern-zone-latest.osm.pbf}
+    volumes:
+      - osrm-data:/data
+      - ./docker/osrm/prepare.sh:/scripts/prepare.sh:ro
+    networks: [rideshare-network]
+
+  osrm:
+    profiles: ["osrm"]
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm
+    restart: unless-stopped
+    command: ["osrm-routed", "--algorithm", "mld", "--ip", "0.0.0.0", "--port", "5000", "/data/region.osrm"]
+    volumes:
+      - osrm-data:/data:ro
+    depends_on:
+      osrm-prep: { condition: service_completed_successfully }
+    networks: [rideshare-network]
+
+  # ═════════════════════════ OBSERVABILITY ═════════════════════════
+  # Every Java service ships traces, metrics and logs over OTLP to the collector,
+  # which fans them out to Tempo, Prometheus and Loki. Grafana reads from all three.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/otel-collector/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - tempo
+      - loki
+    networks: [rideshare-network]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-remote-write-receiver   # Tempo span-metrics + k6 write here
+      - --enable-feature=exemplar-storage    # metric -> trace links
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [rideshare-network]
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    networks: [rideshare-network]
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
+    restart: unless-stopped
+    user: "0:0"
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks: [rideshare-network]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # read by grafana.ini ([smtp] uses $__env{...}) and by the contact point
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+      - mailpit
+    networks: [rideshare-network]
+
+  # Local SMTP server that catches Grafana's alert e-mails
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # web UI
+      - "1025:1025"   # SMTP
+    networks: [rideshare-network]
+
+  # ── exporters ──
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    command: ["--docker_only=true", "--housekeeping_interval=10s", "--store_container_labels=false"]
+    ports:
+      - "8086:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks: [rideshare-network]
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    pid: host
+    command: ["--path.rootfs=/host", "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"]
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro
+    networks: [rideshare-network]
+
+  mysqld-exporter-primary:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: mysqld-exporter-primary
+    restart: unless-stopped
+    command: ["--config.my-cnf=/etc/mysqld-exporter/primary.my.cnf", "--collect.info_schema.innodb_metrics", "--collect.global_status", "--collect.global_variables", "--collect.slave_status"]
+    volumes:
+      - ./observability/mysqld-exporter/primary.my.cnf:/etc/mysqld-exporter/primary.my.cnf:ro
+    depends_on:
+      mysql-primary: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  mysqld-exporter-replica:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: mysqld-exporter-replica
+    restart: unless-stopped
+    command: ["--config.my-cnf=/etc/mysqld-exporter/replica.my.cnf", "--collect.info_schema.innodb_metrics", "--collect.global_status", "--collect.global_variables", "--collect.slave_status"]
+    volumes:
+      - ./observability/mysqld-exporter/replica.my.cnf:/etc/mysqld-exporter/replica.my.cnf:ro
+    depends_on:
+      mysql-replica: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [rideshare-network]
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    container_name: kafka-exporter
+    restart: unless-stopped
+    command: ["--kafka.server=kafka:29092", "--topic.filter=.*", "--group.filter=.*"]
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+    networks: [rideshare-network]
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    networks: [rideshare-network]
+
+  # ═════════════════════════ LOAD TESTS (profile "tests") ═════════════════════════
+  # docker compose --profile tests run --rm k6 run /scripts/smoke.js
+  k6:
+    profiles: ["tests"]
+    image: grafana/k6:0.54.0
+    container_name: k6
+    environment:
+      BASE_URL: http://api-gateway:8080
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_STATS: "p(50),p(95),p(99),max"
+    volumes:
+      - ./tests:/scripts:ro
+    networks: [rideshare-network]
+
+volumes:
+  mysql-primary-data:
+  mysql-replica-data:
+  redis-data:
+  kafka-data:
+  osrm-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:
+
+networks:
+  rideshare-network:
+    driver: bridge
